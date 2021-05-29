@@ -1,0 +1,572 @@
+---
+title: "Home Prices EDA and Machine Learning"
+output: html_document
+
+---
+
+```{r setup, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Add Libraries
+```{r, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(glmnet)
+library(plotly)
+library(MASS)
+library(caret)
+library(leaps)
+library(tibble)
+library(magrittr) 
+library(dplyr)
+library(tidyverse)
+library(scales)
+library(tree)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+
+theme_set(theme_bw())
+```
+
+#### Load in dataset
+```{r}
+#install.packages('bit64')
+Price <- fread("trainPrice.csv")
+#Price <- fread("/Users/paulademacker/Documents/USA/Boston U/2. term/BA810/Team Project/trainPrice.csv")
+```
+
+#### First few rows
+We can see that we have a total of 25 features in the dataset
+```{r}
+head(Price, 5)
+```
+
+#### Structure of the dataset
+There are a total of 1,601,458 observations
+```{r}
+str(Price)
+transform(Price, transaction_real_price = as.numeric(transaction_real_price))
+#summary(Price)
+```
+
+
+### Cleaning the Data
+
+#### view the count of null values in each column
+The feature, total_parking_capacity_in_site has the largest number of null values (91813)
+```{r}
+Price[, lapply(.SD, function(x) sum(is.na(x)))]
+```
+#### View all unqiue values present in columns
+```{r}
+unique(Price$heat_type)
+```
+##### How many are empty strings?
+```{r}
+Price[heat_type == ''][, .N]
+```
+
+##### We can remove these empty string and dash values to create dummy variables later
+```{r}
+Price <- Price[heat_type != '']
+```
+```{r}
+Price[heat_fuel == ''][, .N]
+```
+```{r}
+Price[heat_fuel == '-'][, .N]
+```
+```{r}
+Price <- Price[heat_fuel != '']
+```
+```{r}
+Price <- Price[heat_fuel != '-']
+```
+
+#####View the unique values in other columns
+```{r}
+unique(Price$bathroom_count)
+```
+```{r}
+unique(Price$city)
+```
+```{r}
+unique(Price$room_count)
+```
+```{r}
+unique(Price$front_door_structure)
+```
+
+##### Count of values that are dashes
+```{r}
+Price[front_door_structure == '-'][, .N]
+```
+
+##### Count of values that are empty strings
+```{r}
+Price[front_door_structure == ''][, .N]
+```
+
+##### We can remove these empty string values to create dummy variables later
+```{r}
+Price <- Price[front_door_structure != '']
+```
+
+##### We can remove these empty dash values to create dummy variables later
+```{r}
+Price <- Price[front_door_structure != '-']
+```
+
+##### View unique year of completion values
+```{r}
+unique(Price$year_of_completion)
+```
+
+#### Drop rows room_count as 8
+After examining the dataset, we determined that this was an outlier since only a very small number of apartments were shown as having 8 rooms
+```{r}
+Price <- Price[room_count != 8]
+```
+
+#### Remove all rows that have missing values
+There are a total of 1601458 million observations, and we will be removing less than 100,000 of them.
+We can confirm that rows were removed using .N (the number of observations)
+```{r}
+Price <- na.omit(Price)
+Price[, .N]
+```
+
+#### Set city and room count as factor
+```{r}
+# Price <- Price[, city:=as.factor(city)]
+# Price <- Price[, room_count:=as.factor(room_count)]
+# Price <- Price[, bathroom_count:=as.factor(bathroom_count)]
+#Price <- Price[, transaction_year_month := as.POSIXct(transaction_year_month, format='%Y%m')]
+#Price <- Price[, year_of_completion := as.Date(year_of_completion, format='%Y')]
+
+str(Price)
+```
+
+
+##### Create dummy variables for use in later ML steps
+We will convert transaction_date, heat_type, heat_fuel, and front_door_structure
+```{r}
+Price <- Price[transaction_date == "1~10", transaction_date:=0]
+Price <- Price[transaction_date == "11~20", transaction_date:=1]
+Price <- Price[transaction_date == "21~30", transaction_date:=2]
+Price <- Price[transaction_date == "21~28", transaction_date:=2]
+Price <- Price[transaction_date == "21~29", transaction_date:=2]
+Price <- Price[transaction_date == "21~31", transaction_date:=2]
+Price[,transaction_date := as.numeric(transaction_date)]
+
+Price <- Price[heat_type == "individual", heat_type:=0]
+Price <- Price[heat_type == "central", heat_type:=1]
+Price <- Price[heat_type == "district", heat_type:=2]
+Price[,heat_type := as.numeric(heat_type)]
+
+Price <- Price[heat_fuel == "gas", heat_fuel:=0]
+Price <- Price[heat_fuel == "cogeneration", heat_fuel:=1]
+Price[,heat_fuel := as.numeric(heat_fuel)]
+
+Price <- Price[front_door_structure == "corridor", front_door_structure:=0]
+Price <- Price[front_door_structure == "stairway", front_door_structure:=1]
+Price <- Price[front_door_structure == "mixed", front_door_structure:=2]
+Price[,front_door_structure := as.numeric(front_door_structure)]
+
+Price[,transaction_real_price := as.numeric(transaction_real_price)] 
+Price[,address_by_law := as.numeric(address_by_law)]
+```
+
+
+#### Barchart showing real price and city
+```{r}
+ggplot(Price, aes(x=as.factor(city), y = transaction_real_price)) + 
+  geom_bar(stat = "summary", fun = "mean")+
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  theme_classic()
+```
+
+#### Barchart showing real price and room count
+```{r}
+ggplot(Price, aes(x=room_count, y = transaction_real_price)) + 
+  geom_bar(stat = "summary", fun = "mean")+
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  theme_classic()
+```
+#### Barchart showing real price and front_door_structure
+```{r}
+ggplot(Price, aes(x=front_door_structure, y = transaction_real_price)) + 
+  geom_bar(stat = "summary", fun = "mean")+
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  theme_classic()
+```
+
+#### Barchart showing real price and heat_fuel
+```{r}
+ggplot(Price, aes(x=heat_fuel, y = transaction_real_price)) + 
+  geom_bar(stat = "summary", fun = "mean")+
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  theme_classic()
+```
+#### Barchart showing real price and heat_type
+```{r}
+ggplot(Price, aes(x=heat_type, y = transaction_real_price)) + 
+  geom_bar(stat = "summary", fun = "mean")+
+  scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+  theme_classic()
+```
+
+
+
+
+
+#### Plotly Map showing locations of apartments
+We can see that all of the apartments are either in Seoul or Busan
+```{r}
+# fig <- head(Price, 100000)
+# fig <- fig %>%
+#   plot_ly(
+#     lat = ~latitude,
+#     lon = ~longitude,
+#     #marker = list(color = "fuchsia"),
+#     color = Price[,"transaction_real_price"],
+#     type = 'scattermapbox',
+#     hovertext = Price[,"transaction_real_price"]) 
+# fig <- fig %>%
+#   layout(
+#     mapbox = list(
+#       style = 'open-street-map',
+#       zoom =2.5,
+#       center = list(longitude = 35.963911, latitude = 127.919770))) 
+# 
+# fig
+```
+
+
+
+
+
+
+
+
+
+# Linear Regression
+```{r}
+Price[, transaction_real_price := as.numeric(transaction_real_price)]
+# we want to select random columns adn set the seed to get consistant results
+set.seed(810)
+
+# select random number
+rnorm(1)
+
+
+
+# Split tha data
+# assign 100K random rows to the test set
+# test index is a random set of 320000 numbers
+# this way we can do an 80/20 split
+test_index <- sample(nrow(Price), 320000)
+# now split
+# we use that set of random numbers to select those random rows
+dd_test <- Price[test_index,]
+dd_train <- Price[-test_index,]
+
+
+# our response variables to use later
+y_train <- dd_train$transaction_real_price
+y_test <- dd_test$transaction_real_price
+
+
+
+# fit the full model
+
+
+fit_lm1 <- lm(transaction_real_price ~ ., data=dd_train)
+
+
+yhat_train_lm1 <- predict(fit_lm1)
+mse_train_lm1 <- mean((y_train - yhat_train_lm1)^2)
+paste("Linear Regression Train MSE",mse_train_lm1)
+
+yhat_test_lm1 <- predict(fit_lm1, dd_test)
+mse_test_lm1 <- mean((y_test - yhat_test_lm1)**2)
+paste("Linear Regression Test MSE",mse_test_lm1)
+
+
+str(dd_train)
+
+
+(y_test[0] - yhat_test_lm1[0])
+
+
+class(Price$transaction_real_price)
+```
+
+
+
+#### Forward Selection
+
+
+```{r}
+
+# Set up repeated k-fold cross-validation
+train.control <- trainControl(method = "cv", number = 10)
+# Train the model
+step.model <- train(transaction_real_price ~., data = dd_train,
+                    method = "leapForward", 
+                    tuneGrid = data.frame(nvmax = 1:24),
+                    trControl = train.control
+                    )
+step.model$results
+```
+```{r}
+str(min(step.model$results$RMSE
+    ))
+```
+
+
+```{r}
+step.model$bestTune
+summary(step.model$finalModel)
+```
+
+#### Backward selection
+```{r}
+
+# Set up repeated k-fold cross-validation
+train.control <- trainControl(method = "cv", number = 10)
+# Train the model
+step.model <- train(transaction_real_price ~., data = dd_train,
+                    method = "leapBackward", 
+                    tuneGrid = data.frame(nvmax = 1:24),
+                    trControl = train.control
+                    )
+step.model$results
+```
+
+
+```{r}
+step.model$bestTune
+summary(step.model$finalModel)
+```
+
+
+
+#### Ridge Regression
+```{r}
+f2 <- as.formula(transaction_real_price ~ apartment_id + city + transaction_year_month + transaction_date + year_of_completion + exclusive_use_area + floor + longitude + latitude + address_by_law + total_parking_capacity_in_site + total_household_count_in_sites + apartment_building_count_in_sites + tallest_building_in_sites + lowest_building_in_sites + heat_type + heat_fuel + room_id + supply_area + total_household_count_of_area_type + room_count + bathroom_count + front_door_structure)
+
+x1_train_sample <- model.matrix(f2, dd_train)[,-1]
+x1_test <- model.matrix(f2, dd_test)[,-1]
+
+fit.ridge <- cv.glmnet(x1_train_sample, y_train, alpha = 0)
+
+ridge.coef <- predict(fit.ridge,
+        type = "coefficients",
+        s = fit.ridge$lambda)
+
+to_plot <- data.table(
+  lambda = fit.ridge$lambda,
+  coef_value = ridge.coef[1, ]
+)
+ggplot(to_plot, aes(log(lambda), coef_value)) +
+  geom_line() +
+  theme_few()
+
+yhat.train.ridge <- predict(fit.ridge, x1_train_sample, s = fit.ridge$lambda.min)
+mse.train.ridge <- mean((y_train - yhat.train.ridge)^2)
+
+yhat.test.ridge <- predict(fit.ridge, x1_test, s = fit.ridge$lambda.min)
+mse.test.ridge <- mean((y_test - yhat.test.ridge)^2)
+
+cat("Train MSE: ",mse.train.ridge)
+cat(" Test MSE: ",mse.test.ridge)
+#Test MSE is minimal higher than Train MSE
+
+```
+
+#### Lasso Regression
+```{r}
+fit.lasso <- cv.glmnet(x1_train_sample, y_train, alpha = 1)
+
+lasso.coef <- predict(fit.lasso,
+        type = "coefficients",
+        s = fit.lasso$lambda)
+
+to_plot <- data.table(
+  lambda = fit.lasso$lambda,
+  coef_value = lasso.coef[1, ]
+)
+ggplot(to_plot, aes(log(lambda), coef_value)) +
+  geom_line() +
+  theme_few()
+
+yhat.train.lasso <- predict(fit.lasso, x1_train_sample, s = fit.lasso$lambda.min)
+mse.train.lasso <- mean((y_train - yhat.train.lasso)^2)
+
+yhat.test.lasso <- predict(fit.lasso, x1_test, s = fit.lasso$lambda.min)
+mse.test.lasso <- mean((y_test - yhat.test.lasso)^2)
+
+cat("Train MSE: ",mse.train.lasso)
+cat(" Test MSE: ",mse.test.lasso)
+#Test MSE is slightly higher than the Train MSE but better than the Ridge Regression
+
+```
+
+
+#### Decision Tree
+```{r}
+set.seed(217)
+train = sample(1:nrow(Price),nrow(Price)*3/4)
+tree.testy = Price[-train,transaction_real_price]
+tree.test = Price[-train]
+
+tree.price = tree(transaction_real_price ~ .,Price,subset = train)
+summary(tree.price)
+```
+
+```{r}
+#plot(tree.price)
+#text(tree.price,pretty = 0)
+# Not exactly nice graph
+# Prune Tree
+cv.price = cv.tree(tree.price)
+plot(cv.price$size,cv.price$dev, type = "b")
+cv.price
+# size = 14 have the lowest cv error
+# which seems like there is no much to prune the decision tree
+```
+
+```{r}
+#Test MSE
+tree.yhat = predict(tree.price,newdata=tree.test)
+mean((tree.yhat - tree.testy)^2) 
+``` 
+
+
+```{r}
+#Lecture Method to deal with decision tree
+set.seed(217)
+tree.price.lec <- rpart(transaction_real_price ~ ., Price,subset = train,
+                    control = rpart.control(cp=0.01))
+rpart.plot(tree.price.lec,type = 1)
+```
+
+```{r}
+tree.yhat.lec = predict(tree.price.lec ,newdata=tree.test)
+mean((tree.yhat.lec - tree.testy)^2) 
+```
+
+
+
+#### Bagging
+```{r}
+Price[,test:= 0]
+Price[sample(nrow(Price),100000),test:=1]
+
+Price.test =  Price[test==1]
+Price.train = Price[test==0]
+
+y.test = Price.test$transaction_real_price
+```
+
+```{r}
+set.seed(217)
+price.train.sample = Price.train[sample(nrow(Price.train),5000)]
+```
+
+
+# Trends of Test MSE as number of data in training growing (1% to 5%)
+```{r}
+library(randomForest)
+set.seed(217)
+test.mse = c()
+for (i in seq(1,5)) {
+train = sample(1:nrow(Price),(nrow(Price)/100)*i)
+tree.testy = Price[-train,transaction_real_price]
+tree.test = Price[-train]
+bag.price = randomForest(transaction_real_price ~ ., data = Price, subset = train, mtry = 24, importance = TRUE)
+yhat.bag = predict(bag.price, newdata = tree.test)
+test.mse = c(test.mse,mean((tree.testy-yhat.bag)^2))
+}
+test.mse 
+```
+
+```{r}
+plot(x=seq(1,5),test.mse)
+```
+
+#Bagging using 5000 rows as training 
+```{r}
+set.seed(217)
+train = sample(1:nrow(Price),5000)
+tree.testy = Price[-train,transaction_real_price]
+tree.test = Price[-train]
+rf.price = randomForest(transaction_real_price ~ ., data = Price, subset = train, mtry=24, importance = TRUE)
+yhat.rf = predict(rf.price, newdata = tree.test)
+mean((tree.testy-yhat.rf)^2)
+
+```
+
+#### Random Forest
+#Method 1 from classes taking sample from training set
+
+```{r}
+fit.rndfor = randomForest(transaction_real_price~.,
+                          data=price.train.sample,
+                          ntree=500,
+                          mtry=5,
+                          importance=TRUE,
+                          do.trace=F)
+varImpPlot(fit.rndfor)
+
+```
+```{r}
+#Test MSE
+yhat.rndfor = predict(fit.rndfor,Price.test)
+mse.rndfor = mean((yhat.rndfor-y.test)^2)
+mse.rndfor
+```
+
+
+# Method 2 directly spliting training sets and test sets
+```{r}
+set.seed(217)
+train = sample(1:nrow(Price),5000)
+tree.testy = Price[-train,transaction_real_price]
+tree.test = Price[-train]
+rf.price = randomForest(transaction_real_price ~ ., data = Price, subset = train, mtry = 5, importance = TRUE)
+yhat.rf = predict(rf.price, newdata = tree.test)
+mean((tree.testy-yhat.rf)^2)
+```
+
+```{r}
+importance(rf.price)
+```
+
+```{r}
+varImpPlot(rf.price)
+```
+
+#### Boosting
+```{r}
+library(gbm)
+set.seed(217)
+train_sample = sample(1:nrow(Price),5000)
+tree.testy_sample = Price[-train_sample,transaction_real_price]
+boost.price = gbm(transaction_real_price ~ ., data = Price[train_sample,], distribution = "gaussian", n.trees = 5000, interaction.depth = 4 )
+summary(boost.price)
+```
+
+```{r}
+#Evaluate boosted tree model
+yhat.boost = predict(boost.price, newdata = Price[-train_sample,], n.trees = 5000)
+mean((tree.testy_sample - yhat.boost)^2)
+```
+
+
+
+
